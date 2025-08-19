@@ -2,6 +2,7 @@ resource "azurerm_network_security_group" "nsg" {
   name                = "${var.application_type}-${var.resource_type}"
   location            = "${var.location}"
   resource_group_name = "${var.resource_group}"
+   tags = var.tags
 
   security_rule {
     name                       = "${var.application_type}-${var.resource_type}-5000"
