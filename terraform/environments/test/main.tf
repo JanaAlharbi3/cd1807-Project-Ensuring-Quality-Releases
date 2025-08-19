@@ -16,7 +16,6 @@ terraform {
     storage_account_name = "tstatecd55d0"
     container_name       = "tfstate"
     key                  = "test.terraform.tfstate"
-    
   }
 }
 module "resource_group" {
