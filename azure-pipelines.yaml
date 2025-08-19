@@ -253,7 +253,7 @@ trigger:
   - main
 
 pool:
-  name: myAgentPool # <-- change if your pool has a different name
+  name: myAgentPool
 
 variables:
   TF_WORKING_DIR: "terraform/environments/test"
@@ -265,13 +265,13 @@ stages:
       - job: terraform
         displayName: "Create CI env"
         variables:
-          - group: eqr-secrets # <-- the variable group you just made
+          - group: eqr-secrets # must include SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
         steps:
           - checkout: self
 
           - bash: |
               echo "Writing terraform.auto.tfvars for CI..."
-              cat > terraform/terraform.auto.tfvars <<EOF
+              cat > $(TF_WORKING_DIR)/terraform.auto.tfvars <<EOF
               subscription_id     = "$(SUBSCRIPTION_ID)"
               client_id           = "$(CLIENT_ID)"
               client_secret       = "$(CLIENT_SECRET)"
@@ -281,17 +281,12 @@ stages:
               resource_group      = "eqr-rg-ci"
               application_type    = "myApplication"
 
-              # use a different CIDR than Dev
               address_space        = ["10.11.0.0/16"]
               virtual_network_name = "ci-vnet"
               address_prefix_test  = "10.11.1.0/24"
 
-              # globally unique web app name per run
               webapp_name          = "jana-eqr-ci-$(Build.BuildId)"
               EOF
-
-              echo "Contents of CI tfvars:"
-              sed -n '1,200p' terraform/terraform.auto.tfvars
             displayName: "Create CI tfvars"
 
           - bash: |
@@ -299,8 +294,12 @@ stages:
               terraform init -upgrade
               terraform plan -out=tfplan
             displayName: "Terraform init & plan"
+            env:
+              ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
 
           - bash: |
               cd $(TF_WORKING_DIR)
               terraform apply -auto-approve tfplan
             displayName: "Terraform apply"
+            env:
+              ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
