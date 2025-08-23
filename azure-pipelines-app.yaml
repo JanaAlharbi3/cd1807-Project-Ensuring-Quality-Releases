@@ -1,0 +1,87 @@
+trigger:
+  - main
+
+# run on your self-hosted VM
+pool:
+  name: Default
+
+variables:
+  PYTHON_VERSION: "3.9"
+  RESOURCE_GROUP: "eqr-rg-ci"
+  APP_NAME_PREFIX: "jana-eqr-ci-" # created by your infra pipeline
+
+stages:
+  # ---- CI: lint & tests & artifact ----
+  - stage: BuildAndTest
+    displayName: "Build & Test"
+    jobs:
+      - job: ci
+        displayName: "Lint & unit tests"
+        variables:
+          - group: eqr-secrets # TENANT_ID, CLIENT_ID, CLIENT_SECRET are used in Deploy stage
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "$(PYTHON_VERSION)"
+
+          - bash: |
+              set -euxo pipefail
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              pip install flake8 pytest
+              flake8 .
+              pytest -q
+            displayName: "Install deps, flake8, pytest, run tests"
+
+          - bash: |
+              set -euxo pipefail
+              mkdir -p build
+              # package the app; adjust excludes if needed
+              zip -r build/app.zip . \
+                -x ".git/*" ".venv/*" "build/*" "__pycache__/*" "*.pyc"
+              ls -lh build/app.zip
+            displayName: "Package app (zip)"
+
+          - publish: build/app.zip
+            artifact: appzip
+            displayName: "Publish artifact"
+
+  # ---- CD: deploy to the App Service that infra created ----
+  - stage: Deploy
+    displayName: "Deploy to App Service"
+    dependsOn: BuildAndTest
+    jobs:
+      - deployment: deploy
+        environment: "dev" # optional: add approvals on this environment later
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: appzip
+
+                - bash: |
+                    set -euxo pipefail
+                    # Login using the same SP creds you stored in the variable group
+                    az login --service-principal \
+                      -u "$(CLIENT_ID)" -p "$(CLIENT_SECRET)" --tenant "$(TENANT_ID)"
+
+                    # Find the newest app created by the infra pipeline
+                    APP_NAME=$(az webapp list -g "$(RESOURCE_GROUP)" \
+                      --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)
+
+                    if [ -z "$APP_NAME" ]; then
+                      echo "No webapp found starting with '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'."
+                      exit 1
+                    fi
+
+                    echo "Deploying to $APP_NAME"
+                    az webapp deployment source config-zip \
+                      -g "$(RESOURCE_GROUP)" -n "$APP_NAME" --src "$(Pipeline.Workspace)/appzip/app.zip"
+
+                    HOST=$(az webapp show -g "$(RESOURCE_GROUP)" -n "$APP_NAME" --query "defaultHostName" -o tsv)
+                    echo "Smoke check https://$HOST/"
+                    curl -I "https://$HOST/" || true
+                  displayName: "Deploy (zip) + smoke check"
