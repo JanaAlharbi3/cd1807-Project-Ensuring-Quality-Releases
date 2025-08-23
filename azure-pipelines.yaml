@@ -253,7 +253,7 @@ trigger:
   - main
 
 pool:
-  name: myAgentPool
+  name: Default
 
 variables:
   TF_WORKING_DIR: "terraform/environments/test"
