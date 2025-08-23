@@ -18,7 +18,7 @@ stages:
       - job: ci
         displayName: "Lint & unit tests"
         variables:
-          - group: eqr-secrets # provides CLIENT_ID/CLIENT_SECRET/TENANT_ID if your tests need Azure
+          - group: eqr-secrets # (if your tests need Azure creds)
         steps:
           - checkout: self
 
@@ -26,21 +26,21 @@ stages:
               set -euxo pipefail
               export DEBIAN_FRONTEND=noninteractive
 
-              # Make sure base tooling is present
+              # Base tooling
               sudo apt-get update
               sudo apt-get install -y \
                 ca-certificates curl unzip \
                 python3 python3-pip python3-venv python3-distutils
 
-              # On 3.6 the system pip can be ancient; bootstrap a good one for Py3.6
+              # Bootstrap pip on old Python 3.6 if missing
               if ! python3 -m pip --version >/dev/null 2>&1; then
                 curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
                 sudo -H python3 get-pip.py
               fi
-              # Keep pip/setuptools/wheel in a 3.6-compatible range
+              # Keep tools in a range compatible with Py3.6
               python3 -m pip install --upgrade "pip<22.0" "setuptools<60" wheel
 
-              # Create a virtual environment (try venv first, fall back to virtualenv)
+              # Create venv (fallback to virtualenv if needed)
               if ! python3 -m venv .venv >/dev/null 2>&1; then
                 python3 -m pip install "virtualenv==20.24.5"
                 python3 -m virtualenv -p python3 .venv
@@ -50,12 +50,14 @@ stages:
               python -V
               python -m pip --version
 
-              # Install deps (pin tools to Py3.6-compatible versions)
+              # Deps + test tools
               if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
               pip install "flake8<6" "pytest<8"
 
-              # Lint & test
-              flake8 .
+              # Lint EXCLUDING .venv, build and .git; allow 120-char lines
+              flake8 . --exclude .venv,build,.git --max-line-length 120
+
+              # Unit tests
               pytest -q
             displayName: "Ensure Python + venv + lint & tests"
 
@@ -92,10 +94,7 @@ stages:
                       curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
                     fi
 
-                    # If you need SP login for management ops, uncomment and use your variable group:
-                    # az login --service-principal \
-                    #   -u "$(CLIENT_ID)" -p "$(CLIENT_SECRET)" --tenant "$(TENANT_ID)" >/dev/null
-
+                    # Find latest webapp in the CI RG by prefix
                     APP_NAME=$(az webapp list -g "$(RESOURCE_GROUP)" \
                       --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)
                     if [ -z "$APP_NAME" ]; then
