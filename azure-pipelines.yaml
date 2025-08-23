@@ -269,25 +269,39 @@ stages:
       - job: terraform
         displayName: "Create CI env"
         variables:
-          # Variable group must include: SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
+          # Must exist in Library > Variable groups
+          # Includes: SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
           - group: eqr-secrets
         steps:
           - checkout: self
             displayName: "Checkout repository"
 
-          # Minimal packages + Terraform from official ZIP (works on Ubuntu 18.04/bionic)
+          # Install Terraform from ZIP and clean any broken HashiCorp APT repo
           - bash: |
               set -euxo pipefail
-              sudo apt-get update -y
-              sudo apt-get install -y curl unzip
+
+              # Remove any stale HashiCorp APT entries that break apt on Ubuntu 18.04 (bionic)
+              sudo find /etc/apt/sources.list.d -maxdepth 1 -type f -name '*hashicorp*' -print -exec sudo rm -f {} \; || true
+
+              # Update and ensure curl/unzip exist (ignore non-fatal update errors)
+              sudo apt-get update -y || true
+              for pkg in curl unzip; do
+                if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+                  sudo apt-get install -y "$pkg"
+                fi
+              done
+
+              # Download & install Terraform
               TF_VERSION="${TF_VERSION:-1.6.6}"
-              curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o /tmp/terraform.zip
-              sudo unzip -o /tmp/terraform.zip -d /usr/local/bin
+              TMP="/tmp/terraform_${TF_VERSION}_linux_amd64.zip"
+              (curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o "$TMP") \
+              || (command -v wget >/dev/null 2>&1 && wget -qO "$TMP" "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip")
+              sudo unzip -o "$TMP" -d /usr/local/bin
               sudo chmod +x /usr/local/bin/terraform
               terraform -version
             displayName: "Install Terraform (zip)"
 
-          # Write CI tfvars (no echo of secrets)
+          # Write CI tfvars (no echoing of secrets)
           - bash: |
               set -euo pipefail
               mkdir -p "$(TF_WORKING_DIR)"
