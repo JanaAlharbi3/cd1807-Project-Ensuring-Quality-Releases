@@ -251,76 +251,72 @@
 #                 echo "Completed Selenium Tests. Check selenium.log for results."
 
 trigger:
-- main
+  - main
 
-# Use your self-hosted agent (Default pool)
+# Self-hosted pool (your VM with the agent)
 pool:
   name: Default
 
 variables:
-  TF_WORKING_DIR: 'terraform/environments/test'
+  TF_WORKING_DIR: "terraform/environments/test"
 
 stages:
-- stage: IaC
-  displayName: 'Terraform Infra (CI)'
-  jobs:
-  - job: terraform
-    displayName: 'Create CI env'
-    # Must contain: SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
-    variables:
-      - group: eqr-secrets
-    steps:
-    - checkout: self
+  - stage: IaC
+    displayName: "Terraform Infra (CI)"
+    jobs:
+      - job: terraform
+        displayName: "Create CI env"
+        variables:
+          # Must include: SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
+          - group: eqr-secrets
+        steps:
+          - checkout: self
 
-    # Install Terraform WITHOUT apt (works on older Ubuntu too)
-    - bash: |
-        set -euxo pipefail
-        TF_VERSION="${TF_VERSION:-1.6.6}"
-        cd /tmp
-        curl -fsSLo terraform.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
-        python3 - <<'PY'
-import zipfile
-z = zipfile.ZipFile('/tmp/terraform.zip')
-z.extract('terraform','/tmp')
-PY
-        sudo install -m 0755 /tmp/terraform /usr/local/bin/terraform
-        terraform -version
-      displayName: 'Install Terraform (direct download)'
+          # Install Terraform without apt (works on older Ubuntu)
+          - bash: |
+              set -euxo pipefail
+              TF_VERSION="${TF_VERSION:-1.6.6}"
+              cd /tmp
+              curl -fsSLo terraform.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+              python3 -c "import zipfile; zipfile.ZipFile('/tmp/terraform.zip').extract('terraform','/tmp')"
+              sudo install -m 0755 /tmp/terraform /usr/local/bin/terraform
+              terraform -version
+            displayName: "Install Terraform (direct download)"
 
-    # Write CI tfvars (no echo of secrets)
-    - bash: |
-        set -euxo pipefail
-        cat > $(TF_WORKING_DIR)/terraform.auto.tfvars <<'EOF'
-        subscription_id     = "$(SUBSCRIPTION_ID)"
-        client_id           = "$(CLIENT_ID)"
-        client_secret       = "$(CLIENT_SECRET)"
-        tenant_id           = "$(TENANT_ID)"
+          # Write CI tfvars (do not echo them back)
+          - bash: |
+              set -euxo pipefail
+              cat > $(TF_WORKING_DIR)/terraform.auto.tfvars <<'EOF'
+              subscription_id     = "$(SUBSCRIPTION_ID)"
+              client_id           = "$(CLIENT_ID)"
+              client_secret       = "$(CLIENT_SECRET)"
+              tenant_id           = "$(TENANT_ID)"
 
-        location            = "East US"
-        resource_group      = "eqr-rg-ci"
-        application_type    = "myApplication"
+              location            = "East US"
+              resource_group      = "eqr-rg-ci"
+              application_type    = "myApplication"
 
-        address_space        = ["10.11.0.0/16"]
-        virtual_network_name = "ci-vnet"
-        address_prefix_test  = "10.11.1.0/24"
+              address_space        = ["10.11.0.0/16"]
+              virtual_network_name = "ci-vnet"
+              address_prefix_test  = "10.11.1.0/24"
 
-        webapp_name          = "jana-eqr-ci-$(Build.BuildId)"
-        EOF
-      displayName: 'Create CI tfvars'
+              webapp_name          = "jana-eqr-ci-$(Build.BuildId)"
+              EOF
+            displayName: "Create CI tfvars"
 
-    - bash: |
-        set -euxo pipefail
-        cd $(TF_WORKING_DIR)
-        terraform init -upgrade
-        terraform plan -out=tfplan
-      displayName: 'Terraform init & plan'
-      env:
-        ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
+          - bash: |
+              set -euxo pipefail
+              cd $(TF_WORKING_DIR)
+              terraform init -upgrade
+              terraform plan -out=tfplan
+            displayName: "Terraform init & plan"
+            env:
+              ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
 
-    - bash: |
-        set -euxo pipefail
-        cd $(TF_WORKING_DIR)
-        terraform apply -auto-approve tfplan
-      displayName: 'Terraform apply'
-      env:
-        ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
+          - bash: |
+              set -euxo pipefail
+              cd $(TF_WORKING_DIR)
+              terraform apply -auto-approve tfplan
+            displayName: "Terraform apply"
+            env:
+              ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
