@@ -252,9 +252,11 @@
 trigger:
   - main
 
+# Run on a Microsoft-hosted Ubuntu VM
 pool:
-  name: Default
+  vmImage: "ubuntu-latest"
 
+# Path to your Terraform environment in the repo
 variables:
   TF_WORKING_DIR: "terraform/environments/test"
 
@@ -264,14 +266,32 @@ stages:
     jobs:
       - job: terraform
         displayName: "Create CI env"
+        # This variable group must contain these secrets:
+        #   SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
         variables:
-          - group: eqr-secrets # must include SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
+          - group: eqr-secrets
         steps:
           - checkout: self
 
+          # Install Terraform
           - bash: |
-              echo "Writing terraform.auto.tfvars for CI..."
-              cat > $(TF_WORKING_DIR)/terraform.auto.tfvars <<EOF
+              set -euxo pipefail
+              sudo apt-get update
+              sudo apt-get install -y curl gnupg software-properties-common unzip
+              curl -fsSL https://apt.releases.hashicorp.com/gpg \
+                | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+              echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
+                https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+                | sudo tee /etc/apt/sources.list.d/hashicorp.list
+              sudo apt-get update
+              sudo apt-get install -y terraform
+              terraform -version
+            displayName: "Install Terraform"
+
+          # Write CI tfvars (no echo of contents to keep secrets out of logs)
+          - bash: |
+              set -euxo pipefail
+              cat > $(TF_WORKING_DIR)/terraform.auto.tfvars <<'EOF'
               subscription_id     = "$(SUBSCRIPTION_ID)"
               client_id           = "$(CLIENT_ID)"
               client_secret       = "$(CLIENT_SECRET)"
@@ -290,6 +310,7 @@ stages:
             displayName: "Create CI tfvars"
 
           - bash: |
+              set -euxo pipefail
               cd $(TF_WORKING_DIR)
               terraform init -upgrade
               terraform plan -out=tfplan
@@ -298,6 +319,7 @@ stages:
               ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
 
           - bash: |
+              set -euxo pipefail
               cd $(TF_WORKING_DIR)
               terraform apply -auto-approve tfplan
             displayName: "Terraform apply"
