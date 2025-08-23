@@ -252,11 +252,10 @@
 trigger:
   - main
 
-# Run on a Microsoft-hosted Ubuntu VM
+# Use your self-hosted agent (Default pool)
 pool:
-  vmImage: "ubuntu-latest"
+  name: Default
 
-# Path to your Terraform environment in the repo
 variables:
   TF_WORKING_DIR: "terraform/environments/test"
 
@@ -266,14 +265,13 @@ stages:
     jobs:
       - job: terraform
         displayName: "Create CI env"
-        # This variable group must contain these secrets:
-        #   SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
+        # Must contain: SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
         variables:
           - group: eqr-secrets
         steps:
           - checkout: self
 
-          # Install Terraform
+          # Install Terraform on the agent
           - bash: |
               set -euxo pipefail
               sudo apt-get update
@@ -288,7 +286,7 @@ stages:
               terraform -version
             displayName: "Install Terraform"
 
-          # Write CI tfvars (no echo of contents to keep secrets out of logs)
+          # Write CI tfvars (no echo of secrets)
           - bash: |
               set -euxo pipefail
               cat > $(TF_WORKING_DIR)/terraform.auto.tfvars <<'EOF'
