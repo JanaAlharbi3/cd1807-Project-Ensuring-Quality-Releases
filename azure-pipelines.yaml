@@ -253,11 +253,9 @@
 trigger:
   - main
 
-# Use your self-hosted agent in the Default pool
+# Use your self-hosted agent (Default pool with your VM agent)
 pool:
   name: Default
-  demands:
-    - Agent.OS -equals Linux
 
 variables:
   TF_WORKING_DIR: "terraform/environments/test"
@@ -268,44 +266,28 @@ stages:
     jobs:
       - job: terraform
         displayName: "Create CI env"
+        # Library > Variable groups: must contain these (as secrets is fine)
+        #   SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
         variables:
-          # Must exist in Library > Variable groups
-          # Includes: SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
           - group: eqr-secrets
+
         steps:
           - checkout: self
-            displayName: "Checkout repository"
 
-          # Install Terraform from ZIP and clean any broken HashiCorp APT repo
+          # Install Terraform via zip (works on Ubuntu 18.04 self-hosted agent)
           - bash: |
               set -euxo pipefail
-
-              # Remove any stale HashiCorp APT entries that break apt on Ubuntu 18.04 (bionic)
-              sudo find /etc/apt/sources.list.d -maxdepth 1 -type f -name '*hashicorp*' -print -exec sudo rm -f {} \; || true
-
-              # Update and ensure curl/unzip exist (ignore non-fatal update errors)
-              sudo apt-get update -y || true
-              for pkg in curl unzip; do
-                if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-                  sudo apt-get install -y "$pkg"
-                fi
-              done
-
-              # Download & install Terraform
-              TF_VERSION="${TF_VERSION:-1.6.6}"
-              TMP="/tmp/terraform_${TF_VERSION}_linux_amd64.zip"
-              (curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o "$TMP") \
-              || (command -v wget >/dev/null 2>&1 && wget -qO "$TMP" "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip")
-              sudo unzip -o "$TMP" -d /usr/local/bin
-              sudo chmod +x /usr/local/bin/terraform
+              VER="1.6.6"
+              curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/${VER}/terraform_${VER}_linux_amd64.zip"
+              unzip -o terraform.zip
+              sudo mv -f terraform /usr/local/bin/terraform
               terraform -version
             displayName: "Install Terraform (zip)"
 
-          # Write CI tfvars (no echoing of secrets)
+          # Write CI tfvars (do NOT echo secrets)
           - bash: |
-              set -euo pipefail
-              mkdir -p "$(TF_WORKING_DIR)"
-              cat > "$(TF_WORKING_DIR)/terraform.auto.tfvars" <<EOF
+              set -euxo pipefail
+              cat > "$(TF_WORKING_DIR)/terraform.auto.tfvars" <<'EOF'
               subscription_id     = "$(SUBSCRIPTION_ID)"
               client_id           = "$(CLIENT_ID)"
               client_secret       = "$(CLIENT_SECRET)"
@@ -319,6 +301,7 @@ stages:
               virtual_network_name = "ci-vnet"
               address_prefix_test  = "10.11.1.0/24"
 
+              # globally-unique per run
               webapp_name          = "jana-eqr-ci-$(Build.BuildId)"
               EOF
             displayName: "Create CI tfvars"
@@ -330,6 +313,7 @@ stages:
               terraform plan -out=tfplan
             displayName: "Terraform init & plan"
             env:
+              # Backend (remote state) key only
               ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
 
           - bash: |
