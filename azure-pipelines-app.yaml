@@ -1,60 +1,71 @@
 trigger:
   - main
 
-# run on your self-hosted VM
 pool:
-  name: Default
+  name: Default # self-hosted agent
 
 variables:
-  PYTHON_VERSION: "3.9"
   RESOURCE_GROUP: "eqr-rg-ci"
-  APP_NAME_PREFIX: "jana-eqr-ci-" # created by your infra pipeline
+  APP_NAME_PREFIX: "jana-eqr-ci-"
+  APP_ZIP: "build/app.zip"
 
 stages:
-  # ---- CI: lint & tests & artifact ----
+  # ------------------ CI: lint, test, package ------------------
   - stage: BuildAndTest
     displayName: "Build & Test"
     jobs:
       - job: ci
         displayName: "Lint & unit tests"
         variables:
-          - group: eqr-secrets # TENANT_ID, CLIENT_ID, CLIENT_SECRET are used in Deploy stage
+          - group: eqr-secrets # TENANT_ID, CLIENT_ID, CLIENT_SECRET available in env
         steps:
           - checkout: self
 
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "$(PYTHON_VERSION)"
+          # Ensure Python & venv are available (no UsePythonVersion on self-hosted)
+          - bash: |
+              set -euxo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              if ! command -v python3 >/dev/null 2>&1; then
+                sudo apt-get update
+                sudo apt-get install -y python3 python3-pip python3-venv
+              fi
+              python3 -V
+              python3 -m pip --version
+            displayName: "Ensure Python3/pip/venv"
 
           - bash: |
               set -euxo pipefail
-              python -m pip install --upgrade pip
-              pip install -r requirements.txt
+              # fresh venv per run
+              python3 -m venv .venv
+              . .venv/bin/activate
+              python -m pip install --upgrade pip wheel
+              # adjust these if your requirements file / tests live elsewhere
+              if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
               pip install flake8 pytest
               flake8 .
               pytest -q
-            displayName: "Install deps, flake8, pytest, run tests"
+            displayName: "Create venv, install deps, lint & test"
 
           - bash: |
               set -euxo pipefail
               mkdir -p build
-              # package the app; adjust excludes if needed
-              zip -r build/app.zip . \
+              # zip the whole repo except common junk; adjust includes/excludes to your app layout
+              zip -r "$(APP_ZIP)" . \
                 -x ".git/*" ".venv/*" "build/*" "__pycache__/*" "*.pyc"
-              ls -lh build/app.zip
+              ls -lh "$(APP_ZIP)"
             displayName: "Package app (zip)"
 
-          - publish: build/app.zip
+          - publish: $(APP_ZIP)
             artifact: appzip
             displayName: "Publish artifact"
 
-  # ---- CD: deploy to the App Service that infra created ----
+  # ------------------ CD: deploy to App Service ------------------
   - stage: Deploy
     displayName: "Deploy to App Service"
     dependsOn: BuildAndTest
     jobs:
       - deployment: deploy
-        environment: "dev" # optional: add approvals on this environment later
+        environment: "dev"
         strategy:
           runOnce:
             deploy:
@@ -62,26 +73,37 @@ stages:
                 - download: current
                   artifact: appzip
 
+                # Install Azure CLI if missing (self-hosted VM)
                 - bash: |
                     set -euxo pipefail
-                    # Login using the same SP creds you stored in the variable group
-                    az login --service-principal \
-                      -u "$(CLIENT_ID)" -p "$(CLIENT_SECRET)" --tenant "$(TENANT_ID)"
+                    if ! command -v az >/dev/null 2>&1; then
+                      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+                    fi
+                    az version
+                  displayName: "Ensure Azure CLI"
 
-                    # Find the newest app created by the infra pipeline
+                - bash: |
+                    set -euxo pipefail
+
+                    # Login with service principal from variable group
+                    az login --service-principal \
+                      -u "$(CLIENT_ID)" -p "$(CLIENT_SECRET)" --tenant "$(TENANT_ID)" >/dev/null
+
+                    # Pick the most recent webapp created by infra (name starts with APP_NAME_PREFIX)
                     APP_NAME=$(az webapp list -g "$(RESOURCE_GROUP)" \
                       --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)
 
                     if [ -z "$APP_NAME" ]; then
-                      echo "No webapp found starting with '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'."
+                      echo "No webapp found starting with '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'." >&2
                       exit 1
                     fi
+                    echo "Deploying to: $APP_NAME"
 
-                    echo "Deploying to $APP_NAME"
                     az webapp deployment source config-zip \
-                      -g "$(RESOURCE_GROUP)" -n "$APP_NAME" --src "$(Pipeline.Workspace)/appzip/app.zip"
+                      -g "$(RESOURCE_GROUP)" -n "$APP_NAME" \
+                      --src "$(Pipeline.Workspace)/appzip/app.zip"
 
                     HOST=$(az webapp show -g "$(RESOURCE_GROUP)" -n "$APP_NAME" --query "defaultHostName" -o tsv)
                     echo "Smoke check https://$HOST/"
-                    curl -I "https://$HOST/" || true
+                    curl -I --max-time 15 "https://$HOST/" || true
                   displayName: "Deploy (zip) + smoke check"
