@@ -1,8 +1,9 @@
 trigger:
   - main
 
+# Self-hosted agent on your VM
 pool:
-  name: Default # self-hosted agent
+  name: Default
 
 variables:
   RESOURCE_GROUP: "eqr-rg-ci"
@@ -10,14 +11,14 @@ variables:
   APP_ZIP: "build/app.zip"
 
 stages:
-  # ------------------ CI ------------------
+  # ================= CI =================
   - stage: BuildAndTest
     displayName: "Build & Test"
     jobs:
       - job: ci
         displayName: "Lint & unit tests"
         variables:
-          - group: eqr-secrets
+          - group: eqr-secrets # provides CLIENT_ID/CLIENT_SECRET/TENANT_ID if your tests need Azure
         steps:
           - checkout: self
 
@@ -25,40 +26,38 @@ stages:
               set -euxo pipefail
               export DEBIAN_FRONTEND=noninteractive
 
-              # Ensure python3 exists (3.6 on Ubuntu 18.04)
-              if ! command -v python3 >/dev/null 2>&1; then
-                sudo apt-get update
-                sudo apt-get install -y python3
-              fi
-              python3 -V || true
+              # Make sure base tooling is present
+              sudo apt-get update
+              sudo apt-get install -y \
+                ca-certificates curl unzip \
+                python3 python3-pip python3-venv python3-distutils
 
-              # Ensure pip (first try apt, then bootstrap for 3.6 if needed)
+              # On 3.6 the system pip can be ancient; bootstrap a good one for Py3.6
               if ! python3 -m pip --version >/dev/null 2>&1; then
-                sudo apt-get update
-                sudo apt-get install -y python3-pip || true
-              fi
-              if ! python3 -m pip --version >/dev/null 2>&1; then
-                # Python 3.6 needs the 3.6 bootstrap URL
                 curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
                 sudo -H python3 get-pip.py
               fi
-              python3 -m pip --version
+              # Keep pip/setuptools/wheel in a 3.6-compatible range
+              python3 -m pip install --upgrade "pip<22.0" "setuptools<60" wheel
 
-              # Ensure venv
-              if ! python3 -m venv -h >/dev/null 2>&1; then
-                sudo apt-get update
-                sudo apt-get install -y python3-venv
+              # Create a virtual environment (try venv first, fall back to virtualenv)
+              if ! python3 -m venv .venv >/dev/null 2>&1; then
+                python3 -m pip install "virtualenv==20.24.5"
+                python3 -m virtualenv -p python3 .venv
               fi
 
-              # Fresh venv, install deps pinned to Py3.6-compatible versions
-              python3 -m venv .venv
               . .venv/bin/activate
-              python -m pip install --upgrade pip wheel setuptools
+              python -V
+              python -m pip --version
+
+              # Install deps (pin tools to Py3.6-compatible versions)
               if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
               pip install "flake8<6" "pytest<8"
+
+              # Lint & test
               flake8 .
               pytest -q
-            displayName: "Ensure Python3/pip/venv + lint & tests"
+            displayName: "Ensure Python + venv + lint & tests"
 
           - bash: |
               set -euxo pipefail
@@ -72,12 +71,13 @@ stages:
             artifact: appzip
             displayName: "Publish artifact"
 
-  # ------------------ CD ------------------
+  # ================= CD =================
   - stage: Deploy
     displayName: "Deploy to App Service"
     dependsOn: BuildAndTest
     jobs:
       - deployment: deploy
+        displayName: "Zip deploy"
         environment: "dev"
         strategy:
           runOnce:
@@ -91,8 +91,10 @@ stages:
                     if ! command -v az >/dev/null 2>&1; then
                       curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
                     fi
-                    az login --service-principal \
-                      -u "$(CLIENT_ID)" -p "$(CLIENT_SECRET)" --tenant "$(TENANT_ID)" >/dev/null
+
+                    # If you need SP login for management ops, uncomment and use your variable group:
+                    # az login --service-principal \
+                    #   -u "$(CLIENT_ID)" -p "$(CLIENT_SECRET)" --tenant "$(TENANT_ID)" >/dev/null
 
                     APP_NAME=$(az webapp list -g "$(RESOURCE_GROUP)" \
                       --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)
@@ -101,6 +103,7 @@ stages:
                       exit 1
                     fi
                     echo "Deploying to: $APP_NAME"
+
                     az webapp deployment source config-zip \
                       -g "$(RESOURCE_GROUP)" -n "$APP_NAME" \
                       --src "$(Pipeline.Workspace)/appzip/app.zip"
