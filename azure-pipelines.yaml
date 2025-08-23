@@ -253,7 +253,7 @@
 trigger:
   - main
 
-# Use your self-hosted agent (Default pool with your VM agent)
+# Use your self-hosted pool
 pool:
   name: Default
 
@@ -266,25 +266,32 @@ stages:
     jobs:
       - job: terraform
         displayName: "Create CI env"
-        # Library > Variable groups: must contain these (as secrets is fine)
-        #   SUBSCRIPTION_ID, TENANT_ID, CLIENT_ID, CLIENT_SECRET, ARM_ACCESS_KEY
         variables:
-          - group: eqr-secrets
-
+          - group: eqr-secrets # must contain SUBSCRIPTION_ID, CLIENT_ID, CLIENT_SECRET, TENANT_ID, ARM_ACCESS_KEY
         steps:
           - checkout: self
 
-          # Install Terraform via zip (works on Ubuntu 18.04 self-hosted agent)
+          # Install Terraform from zip into /usr/local/bin (no apt repos needed)
           - bash: |
               set -euxo pipefail
-              VER="1.6.6"
-              curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/${VER}/terraform_${VER}_linux_amd64.zip"
-              unzip -o terraform.zip
-              sudo mv -f terraform /usr/local/bin/terraform
+
+              # ensure unzip exists; remove old hashicorp apt source if present to avoid bionic Release errors
+              if ! command -v unzip >/dev/null 2>&1; then
+                sudo rm -f /etc/apt/sources.list.d/hashicorp.list || true
+                sudo apt-get update
+                sudo apt-get install -y unzip
+              fi
+
+              VER=1.6.6
+              TMP_DIR="$(mktemp -d /tmp/tf.XXXX)"
+              curl -fsSL -o "${TMP_DIR}/terraform.zip" "https://releases.hashicorp.com/terraform/${VER}/terraform_${VER}_linux_amd64.zip"
+              unzip -o "${TMP_DIR}/terraform.zip" -d "${TMP_DIR}"
+              sudo install -m 0755 "${TMP_DIR}/terraform" /usr/local/bin/terraform
               terraform -version
+              rm -rf "${TMP_DIR}"
             displayName: "Install Terraform (zip)"
 
-          # Write CI tfvars (do NOT echo secrets)
+          # Write CI tfvars (don’t echo contents to logs)
           - bash: |
               set -euxo pipefail
               cat > "$(TF_WORKING_DIR)/terraform.auto.tfvars" <<'EOF'
@@ -301,11 +308,11 @@ stages:
               virtual_network_name = "ci-vnet"
               address_prefix_test  = "10.11.1.0/24"
 
-              # globally-unique per run
               webapp_name          = "jana-eqr-ci-$(Build.BuildId)"
               EOF
             displayName: "Create CI tfvars"
 
+          # terraform init & plan (backend key via env)
           - bash: |
               set -euxo pipefail
               cd "$(TF_WORKING_DIR)"
@@ -313,9 +320,9 @@ stages:
               terraform plan -out=tfplan
             displayName: "Terraform init & plan"
             env:
-              # Backend (remote state) key only
               ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
 
+          # terraform apply
           - bash: |
               set -euxo pipefail
               cd "$(TF_WORKING_DIR)"
