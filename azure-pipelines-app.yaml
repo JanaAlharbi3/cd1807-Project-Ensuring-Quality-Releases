@@ -10,46 +10,59 @@ variables:
   APP_ZIP: "build/app.zip"
 
 stages:
-  # ------------------ CI: lint, test, package ------------------
+  # ------------------ CI ------------------
   - stage: BuildAndTest
     displayName: "Build & Test"
     jobs:
       - job: ci
         displayName: "Lint & unit tests"
         variables:
-          - group: eqr-secrets # TENANT_ID, CLIENT_ID, CLIENT_SECRET available in env
+          - group: eqr-secrets
         steps:
           - checkout: self
 
-          # Ensure Python & venv are available (no UsePythonVersion on self-hosted)
           - bash: |
               set -euxo pipefail
               export DEBIAN_FRONTEND=noninteractive
+
+              # Ensure python3 exists (3.6 on Ubuntu 18.04)
               if ! command -v python3 >/dev/null 2>&1; then
                 sudo apt-get update
-                sudo apt-get install -y python3 python3-pip python3-venv
+                sudo apt-get install -y python3
               fi
-              python3 -V
-              python3 -m pip --version
-            displayName: "Ensure Python3/pip/venv"
+              python3 -V || true
 
-          - bash: |
-              set -euxo pipefail
-              # fresh venv per run
+              # Ensure pip (first try apt, then bootstrap for 3.6 if needed)
+              if ! python3 -m pip --version >/dev/null 2>&1; then
+                sudo apt-get update
+                sudo apt-get install -y python3-pip || true
+              fi
+              if ! python3 -m pip --version >/dev/null 2>&1; then
+                # Python 3.6 needs the 3.6 bootstrap URL
+                curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
+                sudo -H python3 get-pip.py
+              fi
+              python3 -m pip --version
+
+              # Ensure venv
+              if ! python3 -m venv -h >/dev/null 2>&1; then
+                sudo apt-get update
+                sudo apt-get install -y python3-venv
+              fi
+
+              # Fresh venv, install deps pinned to Py3.6-compatible versions
               python3 -m venv .venv
               . .venv/bin/activate
-              python -m pip install --upgrade pip wheel
-              # adjust these if your requirements file / tests live elsewhere
+              python -m pip install --upgrade pip wheel setuptools
               if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-              pip install flake8 pytest
+              pip install "flake8<6" "pytest<8"
               flake8 .
               pytest -q
-            displayName: "Create venv, install deps, lint & test"
+            displayName: "Ensure Python3/pip/venv + lint & tests"
 
           - bash: |
               set -euxo pipefail
               mkdir -p build
-              # zip the whole repo except common junk; adjust includes/excludes to your app layout
               zip -r "$(APP_ZIP)" . \
                 -x ".git/*" ".venv/*" "build/*" "__pycache__/*" "*.pyc"
               ls -lh "$(APP_ZIP)"
@@ -59,7 +72,7 @@ stages:
             artifact: appzip
             displayName: "Publish artifact"
 
-  # ------------------ CD: deploy to App Service ------------------
+  # ------------------ CD ------------------
   - stage: Deploy
     displayName: "Deploy to App Service"
     dependsOn: BuildAndTest
@@ -73,32 +86,21 @@ stages:
                 - download: current
                   artifact: appzip
 
-                # Install Azure CLI if missing (self-hosted VM)
                 - bash: |
                     set -euxo pipefail
                     if ! command -v az >/dev/null 2>&1; then
                       curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
                     fi
-                    az version
-                  displayName: "Ensure Azure CLI"
-
-                - bash: |
-                    set -euxo pipefail
-
-                    # Login with service principal from variable group
                     az login --service-principal \
                       -u "$(CLIENT_ID)" -p "$(CLIENT_SECRET)" --tenant "$(TENANT_ID)" >/dev/null
 
-                    # Pick the most recent webapp created by infra (name starts with APP_NAME_PREFIX)
                     APP_NAME=$(az webapp list -g "$(RESOURCE_GROUP)" \
                       --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)
-
                     if [ -z "$APP_NAME" ]; then
-                      echo "No webapp found starting with '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'." >&2
+                      echo "No webapp matching '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'." >&2
                       exit 1
                     fi
                     echo "Deploying to: $APP_NAME"
-
                     az webapp deployment source config-zip \
                       -g "$(RESOURCE_GROUP)" -n "$APP_NAME" \
                       --src "$(Pipeline.Workspace)/appzip/app.zip"
