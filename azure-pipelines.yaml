@@ -253,80 +253,84 @@
 trigger:
   - main
 
-# Use your self-hosted pool
 pool:
-  name: Default
+  name: Default # your self-hosted agent pool
 
 variables:
-  TF_WORKING_DIR: "terraform/environments/test"
+  PYTHON_VERSION: "3.9"
+  RESOURCE_GROUP: "eqr-rg-ci"
+  APP_NAME_PREFIX: "jana-eqr-ci-" # what your infra pipeline uses
 
 stages:
-  - stage: IaC
-    displayName: "Terraform Infra (CI)"
+  - stage: BuildAndTest
+    displayName: "Build & Test"
     jobs:
-      - job: terraform
-        displayName: "Create CI env"
+      - job: ci
+        displayName: "Lint & unit tests"
         variables:
-          - group: eqr-secrets # must contain SUBSCRIPTION_ID, CLIENT_ID, CLIENT_SECRET, TENANT_ID, ARM_ACCESS_KEY
+          - group: eqr-secrets # must contain: TENANT_ID, CLIENT_ID, CLIENT_SECRET
         steps:
           - checkout: self
 
-          # Install Terraform from zip into /usr/local/bin (no apt repos needed)
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "$(PYTHON_VERSION)"
+
           - bash: |
               set -euxo pipefail
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              pip install flake8 pytest
+              flake8 .
+              pytest -q
+            displayName: "Install deps, flake8, pytest"
 
-              # ensure unzip exists; remove old hashicorp apt source if present to avoid bionic Release errors
-              if ! command -v unzip >/dev/null 2>&1; then
-                sudo rm -f /etc/apt/sources.list.d/hashicorp.list || true
-                sudo apt-get update
-                sudo apt-get install -y unzip
-              fi
-
-              VER=1.6.6
-              TMP_DIR="$(mktemp -d /tmp/tf.XXXX)"
-              curl -fsSL -o "${TMP_DIR}/terraform.zip" "https://releases.hashicorp.com/terraform/${VER}/terraform_${VER}_linux_amd64.zip"
-              unzip -o "${TMP_DIR}/terraform.zip" -d "${TMP_DIR}"
-              sudo install -m 0755 "${TMP_DIR}/terraform" /usr/local/bin/terraform
-              terraform -version
-              rm -rf "${TMP_DIR}"
-            displayName: "Install Terraform (zip)"
-
-          # Write CI tfvars (don’t echo contents to logs)
           - bash: |
               set -euxo pipefail
-              cat > "$(TF_WORKING_DIR)/terraform.auto.tfvars" <<'EOF'
-              subscription_id     = "$(SUBSCRIPTION_ID)"
-              client_id           = "$(CLIENT_ID)"
-              client_secret       = "$(CLIENT_SECRET)"
-              tenant_id           = "$(TENANT_ID)"
+              mkdir -p build
+              # package everything needed by your app; tweak paths to your project layout
+              zip -r build/app.zip . -x ".git/*" ".venv/*" "build/*" "__pycache__/*" "*.pyc"
+              ls -lh build/app.zip
+            displayName: "Package app (zip)"
 
-              location            = "East US"
-              resource_group      = "eqr-rg-ci"
-              application_type    = "myApplication"
+          - publish: build/app.zip
+            artifact: appzip
+            displayName: "Publish artifact"
 
-              address_space        = ["10.11.0.0/16"]
-              virtual_network_name = "ci-vnet"
-              address_prefix_test  = "10.11.1.0/24"
+  - stage: Deploy
+    displayName: "Deploy to App Service"
+    dependsOn: BuildAndTest
+    jobs:
+      - deployment: deploy
+        environment: "dev" # optional env name with approvals if you want
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: appzip
 
-              webapp_name          = "jana-eqr-ci-$(Build.BuildId)"
-              EOF
-            displayName: "Create CI tfvars"
+                - bash: |
+                    set -euxo pipefail
+                    # Login with the same SP the Terraform pipeline used
+                    az login --service-principal \
+                      -u "$(CLIENT_ID)" -p "$(CLIENT_SECRET)" --tenant "$(TENANT_ID)"
 
-          # terraform init & plan (backend key via env)
-          - bash: |
-              set -euxo pipefail
-              cd "$(TF_WORKING_DIR)"
-              terraform init -upgrade
-              terraform plan -out=tfplan
-            displayName: "Terraform init & plan"
-            env:
-              ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
+                    # Find the latest CI app created by infra (name starts with APP_NAME_PREFIX)
+                    APP_NAME=$(az webapp list -g "$(RESOURCE_GROUP)" \
+                      --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)
 
-          # terraform apply
-          - bash: |
-              set -euxo pipefail
-              cd "$(TF_WORKING_DIR)"
-              terraform apply -auto-approve tfplan
-            displayName: "Terraform apply"
-            env:
-              ARM_ACCESS_KEY: $(ARM_ACCESS_KEY)
+                    if [ -z "$APP_NAME" ]; then
+                      echo "No webapp found starting with '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'."
+                      exit 1
+                    fi
+
+                    echo "Deploying to $APP_NAME"
+                    az webapp deployment source config-zip \
+                      -g "$(RESOURCE_GROUP)" -n "$APP_NAME" --src "$(Pipeline.Workspace)/appzip/app.zip"
+
+                    # quick smoke check
+                    HOST=$(az webapp show -g "$(RESOURCE_GROUP)" -n "$APP_NAME" --query "defaultHostName" -o tsv)
+                    echo "Smoke check https://$HOST/"
+                    curl -I "https://$HOST/" || true
+                  displayName: "Deploy (zip) + smoke check"

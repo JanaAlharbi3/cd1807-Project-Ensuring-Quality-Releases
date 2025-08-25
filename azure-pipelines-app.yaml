@@ -1,3 +1,4 @@
+# azure-pipelines-app.yaml
 trigger:
   - main
 
@@ -57,8 +58,16 @@ stages:
               # Lint EXCLUDING .venv, build and .git; allow 120-char lines
               flake8 . --exclude .venv,build,.git --max-line-length 120
 
-              # Unit tests
+              # ---- Run tests but don't fail the job if none are found (pytest exit code 5)
+              set +e
               pytest -q
+              code=$?
+              set -e
+              if [ "$code" -eq 5 ]; then
+                echo "No tests discovered (pytest exit code 5). Continuing..."
+              elif [ "$code" -ne 0 ]; then
+                exit $code
+              fi
             displayName: "Ensure Python + venv + lint & tests"
 
           - bash: |
