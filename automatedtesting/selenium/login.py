@@ -1,19 +1,12 @@
-# #!/usr/bin/env python
-from selenium import webdriver
+"""Selenium helpers for UI tests."""
+
 from selenium.webdriver.chrome.options import Options as ChromeOptions
-
-
-# Start the browser and login with standard_user
-def login (user, password):
-    print ('Starting the browser...')
-    # --uncomment when running in Azure DevOps.
-    # options = ChromeOptions()
-    # options.add_argument("--headless")
-    # driver = webdriver.Chrome(options=options)
-    driver = webdriver.Chrome()
-    print ('Browser started successfully. Navigating to the demo page to login.')
-    driver.get('https://www.saucedemo.com/')
-
-login('standard_user', 'secret_sauce')
-
-# ToDo: Add more functional UI tests as per your requirements.
+def make_options(headless: bool = True) -> ChromeOptions:
+    """Return a configured ChromeOptions instance."""
+    options = ChromeOptions()
+    if headless:
+        options.add_argument("--headless")
+    return options
+def build_login_url(base_url: str) -> str:
+    """Return the login page URL given a base URL."""
+    return f"{base_url.rstrip('/')}/login"
