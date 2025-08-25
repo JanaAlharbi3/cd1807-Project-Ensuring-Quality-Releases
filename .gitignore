@@ -37,3 +37,4 @@ automatedtesting/jmeter/**/report/
 __pycache__/
 *.pyc
 node_modules/
+.replacements.txt
