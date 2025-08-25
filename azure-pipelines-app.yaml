@@ -125,7 +125,7 @@ stages:
 
                     HOST="$(az webapp show -g "$(RESOURCE_GROUP)" -n "${APP_NAME}" --query "defaultHostName" -o tsv)"
                     echo "Smoke check https://${HOST}/"
-                    curl -I --max-time 20 "https://${HOST}/" || true
+                    curl -sS --head --max-time 20 "https://$HOST/" || true
                   displayName: "Login + Deploy (zip) + smoke check"
                   env:
                     CLIENT_ID: $(CLIENT_ID)
