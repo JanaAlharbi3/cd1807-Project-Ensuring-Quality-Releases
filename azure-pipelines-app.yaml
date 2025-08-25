@@ -1,4 +1,3 @@
-# azure-pipelines-app.yaml
 trigger:
   - main
 
@@ -27,10 +26,10 @@ stages:
               set -euxo pipefail
               export DEBIAN_FRONTEND=noninteractive
 
-              # Base tooling
+              # Base tooling (note: includes zip now)
               sudo apt-get update
               sudo apt-get install -y \
-                ca-certificates curl unzip \
+                ca-certificates curl zip unzip \
                 python3 python3-pip python3-venv python3-distutils
 
               # Bootstrap pip on old Python 3.6 if missing
@@ -58,15 +57,16 @@ stages:
               # Lint EXCLUDING .venv, build and .git; allow 120-char lines
               flake8 . --exclude .venv,build,.git --max-line-length 120
 
-              # ---- Run tests but don't fail the job if none are found (pytest exit code 5)
+              # Unit tests — treat exit code 5 ("no tests collected") as success
               set +e
               pytest -q
-              code=$?
+              status=$?
               set -e
-              if [ "$code" -eq 5 ]; then
-                echo "No tests discovered (pytest exit code 5). Continuing..."
-              elif [ "$code" -ne 0 ]; then
-                exit $code
+              if [ "$status" -eq 5 ]; then
+                echo "Pytest: no tests collected, continuing."
+              elif [ "$status" -ne 0 ]; then
+                echo "Pytest failed with exit $status"
+                exit "$status"
               fi
             displayName: "Ensure Python + venv + lint & tests"
 

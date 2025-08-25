@@ -1,308 +1,95 @@
-# name: Azure Pipelines
-
-# # Start with a minimal pipeline that you can customize to build and deploy your code.
-# # Add steps that build, run tests, deploy, and more:
-# # https://aka.ms/yaml
-# trigger:
-# - main
-
-# # ToDo: Replace the agent pool name, if you are using Udacity Cloud lab.
-# # Otherwise, comment out the line below.
-# pool: myAgentPool
-
-# variables:
-#   python.version: '3.7.6'
-#   # ToDo: Replace the service connection name as used in the DevOps project settings
-#   azureServiceConnectionId: 'myServiceConnection'
-#   # Project root folder. Point to the folder containing manage.py file.
-#   projectRoot: $(System.DefaultWorkingDirectory)
-#   # Environment name
-#   environmentName: 'test'
-
-# stages:
-# #--------------------------------------------#
-# # BUILD STAGE
-# #--------------------------------------------#
-# - stage: Build
-#   jobs:
-#   - job: BuildInfrastructure
-#     steps:
-#     #--------------------------------------------#
-#     # Use Terraform to create the Infrastructure
-#     # Install Terraform on the pipeline agent
-#     - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
-#       displayName: 'Terrafom installation'
-#       inputs:
-#         terraformVersion: '1.2.9'
-
-#     # Run Terraform Init on the pipeline agent
-#     # ToDo: Replace the resource group name, storage account name, and container name below
-#     - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV3@3
-#       displayName: 'Terrafom init'
-#       inputs:
-#         provider: 'azurerm'
-#         command: 'init'
-#         workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/environments/test'
-#         backendServiceArm: '$(azureServiceConnectionId)'
-#         backendAzureRmResourceGroupName: ''
-#         backendAzureRmStorageAccountName: ''
-#         backendAzureRmContainerName: ''
-#         backendAzureRmKey: 'test.terraform.tfstate'
-
-#     - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV3@3
-#       displayName: Terraform validate
-#       inputs:
-#         provider: 'azurerm'
-#         command: 'validate'
-
-#     # OPTIONAL - This step is needed only if your Terraform VM uses an SSH key pair for login and you want your pipeline agent to connect to it.
-#     # Generate an SSH key pair in your local/AZ Cloud shell. Use the public key in the Terraform VM module.
-#     # Install public key and private key file to the pipeline agent, using the task below.
-#     # ToDo: Change the inputs value below
-#     # - task: InstallSSHKey@0
-#     #   inputs:
-#     #     knownHostsEntry: 'KNOWN_HOSTS_STRING' # variable value
-#     #     sshPublicKey: 'PUBLIC_KEY'            # variable value
-#     #     sshKeySecureFile: 'id_rsa' # Use secure file feature in the pipeline library UI to save the "id_rsa" file, as mentioned here: https://learn.microsoft.com/en-us/azure/devops/pipelines/library/secure-files?view=azure-devops#add-a-secure-file
-
-#     # - task: DownloadSecureFile@1
-#     #  name: udacity_public_key
-#     #  displayName:
-#     #  inputs:
-#     #   secureFile:
-
-#     # Run Terraform Apply
-#     - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV3@3
-#       displayName: Terraform apply
-#       inputs:
-#         provider: 'azurerm'
-#         command: 'apply'
-#         workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/environments/test'
-#         environmentServiceNameAzureRM: '$(azureServiceConnectionId)'
-
-#     # ToDo: Change the workingDirectory path, as applicable to you
-#     # Destroy the resources in Azure by running a separate pipeline.
-#     # - task: TerraformTaskV3@3
-#     #   displayName: Terraform destroy
-#     #   inputs:
-#     #     provider: 'azurerm'
-#     #     command: 'destroy'
-#     #     workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/environments/test'
-#     #     environmentServiceNameAzureRM: '$(azureServiceConnectionId)'
-
-# #--------------------------------------------#
-#     # Postman - Install Newman
-#     # ToDo: Update the command and verify the working directory
-#     - task: CmdLine@2
-#       displayName: Install Newman
-#       inputs:
-#         script: 'sudo npm install -g newman'
-#         workingDirectory: $(System.DefaultWorkingDirectory)
-#     # Postman Data Validation Test Suite
-#     # ToDo: Verify the working directory
-#     - task: CmdLine@2
-#       displayName: Run Data Validation Tests
-#       continueOnError: true
-#       inputs:
-#         script: 'newman run TestSuite.Data-Validation.json -e Test.environment.json --reporters cli,junit --reporter-junit-export TEST-DataValidation.xml'
-#         workingDirectory: '$(System.DefaultWorkingDirectory)/automatedtesting/postman'
-#     # Postman Regression Test Suite
-#     # ToDo: Verify the working directory
-#     - task: CmdLine@2
-#       displayName: Run Regression Tests
-#       continueOnError: true
-#       inputs:
-#         script: 'newman run TestSuite.Regression.json -e Test.environment.json --reporters cli,junit --reporter-junit-export TEST-Regression.xml'
-#         workingDirectory: '$(System.DefaultWorkingDirectory)/automatedtesting/postman'
-#     # Postman - Publish Results
-#     # ToDo: Complete the task as explained here: https://learn.microsoft.com/en-us/azure/devops/pipelines/tasks/test/publish-test-results?view=azure-devops&tabs=trx%2Cyaml#yaml-snippet
-#     - task: PublishTestResults@2
-#       inputs:
-#         testResultsFormat: 'JUnit'
-#         testResultsFiles: '**/TEST-*.xml'
-#         searchFolder:       # ToDo
-#         mergeTestResults: true
-#         testRunTitle:       # ToDo
-
-#     #--------------------------------------------#
-#     # Selenium (UI) Test Suite - Archive the package
-#     # "ArchiveFiles@2" picks up the web package and archives it.
-#     - task: ArchiveFiles@2
-#       displayName: 'Archive UI Tests'
-#       inputs:
-#         rootFolderOrFile: '$(System.DefaultWorkingDirectory)/automatedtesting/selenium'
-#         includeRootFolder: false
-#         archiveType: 'zip'
-#         archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)-uitests.zip'
-#     # Selenium Test Suite - Publish the package
-#     - publish: $(Build.ArtifactStagingDirectory)/$(Build.BuildId)-uitests.zip   # Same as the archiveFile artifact above.
-#       displayName: 'Upload Package'
-#       artifact: drop-uitests
-
-#     #--------------------------------------------#
-#     # FakeRestAPI - Archive
-#     # ToDo: Complete the ArchiveFiles@2 task and publish step
-#     - task: ArchiveFiles@2
-#       displayName: 'Archive FakeRestAPI'
-#       inputs:
-#         rootFolderOrFile:
-#         includeRootFolder: false
-#         archiveType: 'zip'
-#         archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)-fakerestapi.zip'
-#     - publish: $(Build.ArtifactStagingDirectory)/$(Build.BuildId)-fakerestapi.zip
-#       displayName: 'Upload Package'
-#       artifact: drop-fakerestapi
-
-#     #--------------------------------------------#
-#     # JMeter (Performance) Test Suite - Archive
-#     # ToDo: Complete the ArchiveFiles@2 task and publish step
-#     - task: ArchiveFiles@2
-#       displayName: 'Archive PerformanceTestSuite'
-#       inputs:
-#         rootFolderOrFile:
-#         includeRootFolder: false
-#         archiveType: 'zip'
-#         archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)-perftests.zip'
-#     # JMeter Test Suite - Publish
-#     - publish: $(Build.ArtifactStagingDirectory)/$(Build.BuildId)-perftests.zip
-#       displayName: 'Upload Package'
-#       artifact: drop-perftests
-
-# #--------------------------------------------#
-# # DEPLOYMENT STAGE
-# #--------------------------------------------#
-# - stage: Deploy
-#   jobs:
-#   #--------------------------------------------#
-#   # Deploy FakeRestAPI Web App
-#   # ToDo: Provide <environment name> you created in your DevOps project
-#   - deployment: FakeRestAPI
-#     pool:
-#       vmImage: 'Ubuntu-18.04'
-#     environment: <environment name>   # ToDo
-#     strategy:
-#       runOnce:
-#         deploy:
-#           steps:
-#           - task: AzureWebApp@1
-#             displayName: 'Deploy Azure Web App'
-#             inputs:
-#               azureSubscription: ''     # ToDo
-#               appName: ''               # ToDo
-#               appType: webApp
-#               package: $(Pipeline.Workspace)/<artifact>/<archiveFile>       # ToDo: Use the published zip artifact.
-#           #--------------------------------------------#
-#           # Run JMeter test suite against the App Service
-#           - task: CmdLine@2
-#             inputs:
-#               script: |
-#                 wget "https://apache.mirrors.lucidnetworks.net//jmeter/binaries/apache-jmeter-5.2.1.tgz"
-#                 tar -xf apache-jmeter-5.2.1.tgz
-#                 unzip -o $(Build.BuildId)-perftests.zip
-#                 ./apache-jmeter-5.2.1/bin/jmeter -n -t PerformanceTestSuite.jmx -j jmeter.log -f
-#                 cat jmeter.log                                                                           # ToDo: Write your commands
-#               workingDirectory: $(Pipeline.Workspace)/<artifact>            # ToDo: Use the artifact name from the task above
-
-#   #--------------------------------------------#
-#   # Selenium | Functional UI Tests
-#   # ToDo:
-#   - deployment: VMDeploy
-#     displayName: Selenium Tests
-#     environment:
-#       name:         # ToDo: Change/provide a name
-#       resourceType: VirtualMachine
-#       tags: selenium
-#     strategy:
-#       runOnce:
-#         deploy:
-#           steps:
-#           - download: current
-#             artifact: drop-ui-tests     # ToDo: Change/provide a name
-
-#           - task: Bash@3
-#             inputs:
-#               targetType: 'inline'
-#               script: |
-#                 #! /bin/bash
-
-#                 sudo apt-get upgrade -y
-#                 sudo apt-get install python3-pip -y
-#                 sudo apt-get install unzip -y
-#                 sudo apt-get install -y chromium-browser
-#                 pip3 install selenium
-#                 cd ~/
-#                 DIR=/home/testuser/app
-#                 if [ ! -d "$DIR" ]; then
-#                     mkdir app
-#                 fi
-#                 mv /home/testuser/azagent/_work/1/drop-uitests/$(Build.BuildId)-uitests.zip app
-#                 cd app
-#                 unzip -o $(Build.BuildId)-uitests.zip
-#                 FILE=/home/testuser/app/chromedriver_linux64.zip
-#                 if [ ! -f "$FILE" ]; then
-#                     LATEST=$(wget -q -O - http://chromedriver.storage.googleapis.com/LATEST_RELEASE)
-#                     wget http://chromedriver.storage.googleapis.com/$LATEST/chromedriver_linux64.zip
-#                     unzip -o chromedriver_linux64.zip
-#                     sudo ln -s $PWD/chromedriver /usr/local/bin/chromedriver
-#                 fi
-#                 export PATH=$PATH:/home/testuser/app
-#                 echo "Starting Selenium Tests"
-#                 python3 add_remove_from_cart.py >> selenium.log
-#                 echo "Completed Selenium Tests. Check selenium.log for results."
-
 trigger:
   - main
 
+# Self-hosted agent on your VM
 pool:
-  name: Default # your self-hosted agent pool
+  name: Default
 
 variables:
-  PYTHON_VERSION: "3.9"
   RESOURCE_GROUP: "eqr-rg-ci"
-  APP_NAME_PREFIX: "jana-eqr-ci-" # what your infra pipeline uses
+  APP_NAME_PREFIX: "jana-eqr-ci-"
+  APP_ZIP: "build/app.zip"
 
 stages:
+  # ================= CI =================
   - stage: BuildAndTest
     displayName: "Build & Test"
     jobs:
       - job: ci
         displayName: "Lint & unit tests"
         variables:
-          - group: eqr-secrets # must contain: TENANT_ID, CLIENT_ID, CLIENT_SECRET
+          - group: eqr-secrets # (if your tests need Azure creds)
         steps:
           - checkout: self
 
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "$(PYTHON_VERSION)"
-
           - bash: |
               set -euxo pipefail
-              python -m pip install --upgrade pip
-              pip install -r requirements.txt
-              pip install flake8 pytest
-              flake8 .
+              export DEBIAN_FRONTEND=noninteractive
+
+              # Base tooling (note: includes zip now)
+              sudo apt-get update
+              sudo apt-get install -y \
+                ca-certificates curl zip unzip \
+                python3 python3-pip python3-venv python3-distutils
+
+              # Bootstrap pip on old Python 3.6 if missing
+              if ! python3 -m pip --version >/dev/null 2>&1; then
+                curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
+                sudo -H python3 get-pip.py
+              fi
+              # Keep tools in a range compatible with Py3.6
+              python3 -m pip install --upgrade "pip<22.0" "setuptools<60" wheel
+
+              # Create venv (fallback to virtualenv if needed)
+              if ! python3 -m venv .venv >/dev/null 2>&1; then
+                python3 -m pip install "virtualenv==20.24.5"
+                python3 -m virtualenv -p python3 .venv
+              fi
+
+              . .venv/bin/activate
+              python -V
+              python -m pip --version
+
+              # Deps + test tools
+              if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+              pip install "flake8<6" "pytest<8"
+
+              # Lint EXCLUDING .venv, build and .git; allow 120-char lines
+              flake8 . --exclude .venv,build,.git --max-line-length 120
+
+              # Unit tests — treat exit code 5 ("no tests collected") as success
+              set +e
               pytest -q
-            displayName: "Install deps, flake8, pytest"
+              status=$?
+              set -e
+              if [ "$status" -eq 5 ]; then
+                echo "Pytest: no tests collected, continuing."
+              elif [ "$status" -ne 0 ]; then
+                echo "Pytest failed with exit $status"
+                exit "$status"
+              fi
+            displayName: "Ensure Python + venv + lint & tests"
 
           - bash: |
               set -euxo pipefail
               mkdir -p build
-              # package everything needed by your app; tweak paths to your project layout
-              zip -r build/app.zip . -x ".git/*" ".venv/*" "build/*" "__pycache__/*" "*.pyc"
-              ls -lh build/app.zip
+              zip -r "$(APP_ZIP)" . \
+                -x ".git/*" ".venv/*" "build/*" "__pycache__/*" "*.pyc"
+              ls -lh "$(APP_ZIP)"
             displayName: "Package app (zip)"
 
-          - publish: build/app.zip
+          - publish: $(APP_ZIP)
             artifact: appzip
             displayName: "Publish artifact"
 
+  # ================= CD =================
   - stage: Deploy
     displayName: "Deploy to App Service"
     dependsOn: BuildAndTest
     jobs:
       - deployment: deploy
-        environment: "dev" # optional env name with approvals if you want
+        displayName: "Zip deploy"
+        environment: "dev"
         strategy:
           runOnce:
             deploy:
@@ -312,25 +99,24 @@ stages:
 
                 - bash: |
                     set -euxo pipefail
-                    # Login with the same SP the Terraform pipeline used
-                    az login --service-principal \
-                      -u "$(CLIENT_ID)" -p "$(CLIENT_SECRET)" --tenant "$(TENANT_ID)"
-
-                    # Find the latest CI app created by infra (name starts with APP_NAME_PREFIX)
-                    APP_NAME=$(az webapp list -g "$(RESOURCE_GROUP)" \
-                      --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)
-
-                    if [ -z "$APP_NAME" ]; then
-                      echo "No webapp found starting with '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'."
-                      exit 1
+                    if ! command -v az >/dev/null 2>&1; then
+                      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
                     fi
 
-                    echo "Deploying to $APP_NAME"
-                    az webapp deployment source config-zip \
-                      -g "$(RESOURCE_GROUP)" -n "$APP_NAME" --src "$(Pipeline.Workspace)/appzip/app.zip"
+                    # Find latest webapp in the CI RG by prefix
+                    APP_NAME=$(az webapp list -g "$(RESOURCE_GROUP)" \
+                      --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)
+                    if [ -z "$APP_NAME" ]; then
+                      echo "No webapp matching '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'." >&2
+                      exit 1
+                    fi
+                    echo "Deploying to: $APP_NAME"
 
-                    # quick smoke check
+                    az webapp deployment source config-zip \
+                      -g "$(RESOURCE_GROUP)" -n "$APP_NAME" \
+                      --src "$(Pipeline.Workspace)/appzip/app.zip"
+
                     HOST=$(az webapp show -g "$(RESOURCE_GROUP)" -n "$APP_NAME" --query "defaultHostName" -o tsv)
                     echo "Smoke check https://$HOST/"
-                    curl -I "https://$HOST/" || true
+                    curl -I --max-time 15 "https://$HOST/" || true
                   displayName: "Deploy (zip) + smoke check"
