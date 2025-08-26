@@ -18,7 +18,7 @@ stages:
       - job: ci
         displayName: "Lint & unit tests"
         variables:
-          - group: eqr-secrets # (if your tests need Azure creds)
+          - group: eqr-secrets # must contain CLIENT_ID, CLIENT_SECRET, TENANT_ID, SUBSCRIPTION_ID
         steps:
           - checkout: self
 
@@ -26,13 +26,13 @@ stages:
               set -euxo pipefail
               export DEBIAN_FRONTEND=noninteractive
 
-              # Base tooling (note: includes zip now)
+              # Base tooling (includes zip for packaging)
               sudo apt-get update
               sudo apt-get install -y \
                 ca-certificates curl zip unzip \
                 python3 python3-pip python3-venv python3-distutils
 
-              # Bootstrap pip on old Python 3.6 if missing
+              # Bootstrap pip on old Python 3.6 if needed
               if ! python3 -m pip --version >/dev/null 2>&1; then
                 curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
                 sudo -H python3 get-pip.py
@@ -57,17 +57,8 @@ stages:
               # Lint EXCLUDING .venv, build and .git; allow 120-char lines
               flake8 . --exclude .venv,build,.git --max-line-length 120
 
-              # Unit tests — treat exit code 5 ("no tests collected") as success
-              set +e
-              pytest -q
-              status=$?
-              set -e
-              if [ "$status" -eq 5 ]; then
-                echo "Pytest: no tests collected, continuing."
-              elif [ "$status" -ne 0 ]; then
-                echo "Pytest failed with exit $status"
-                exit "$status"
-              fi
+              # Run tests; it's OK if there are none
+              pytest -q || if [ $? -eq 5 ]; then echo "No tests collected"; else exit 1; fi
             displayName: "Ensure Python + venv + lint & tests"
 
           - bash: |
@@ -99,24 +90,38 @@ stages:
 
                 - bash: |
                     set -euxo pipefail
+
+                    # Azure CLI (install if missing)
                     if ! command -v az >/dev/null 2>&1; then
                       curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
                     fi
 
-                    # Find latest webapp in the CI RG by prefix
-                    APP_NAME=$(az webapp list -g "$(RESOURCE_GROUP)" \
-                      --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)
+                    # --- LOGIN WITH SERVICE PRINCIPAL ---
+                    az login --service-principal \
+                      -u "$CLIENT_ID" -p "$CLIENT_SECRET" --tenant "$TENANT_ID" >/dev/null
+
+                    az account set --subscription "$SUBSCRIPTION_ID"
+
+                    # Find the newest webapp in the RG that matches the prefix
+                    APP_NAME="$(az webapp list -g "$(RESOURCE_GROUP)" \
+                      --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)"
+
                     if [ -z "$APP_NAME" ]; then
                       echo "No webapp matching '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'." >&2
                       exit 1
                     fi
-                    echo "Deploying to: $APP_NAME"
+                    echo "Deploying to: ${APP_NAME}"
 
                     az webapp deployment source config-zip \
-                      -g "$(RESOURCE_GROUP)" -n "$APP_NAME" \
+                      -g "$(RESOURCE_GROUP)" -n "${APP_NAME}" \
                       --src "$(Pipeline.Workspace)/appzip/app.zip"
 
-                    HOST=$(az webapp show -g "$(RESOURCE_GROUP)" -n "$APP_NAME" --query "defaultHostName" -o tsv)
-                    echo "Smoke check https://$HOST/"
-                    curl -I --max-time 15 "https://$HOST/" || true
-                  displayName: "Deploy (zip) + smoke check"
+                    HOST="$(az webapp show -g "$(RESOURCE_GROUP)" -n "${APP_NAME}" --query "defaultHostName" -o tsv)"
+                    echo "Smoke check https://${HOST}/"
+                    curl -I --max-time 20 "https://${HOST}/" || true
+                  displayName: "Login + Deploy (zip) + smoke check"
+                  env:
+                    CLIENT_ID: $(CLIENT_ID)
+                    CLIENT_SECRET: $(CLIENT_SECRET)
+                    TENANT_ID: $(TENANT_ID)
+                    SUBSCRIPTION_ID: $(SUBSCRIPTION_ID)
