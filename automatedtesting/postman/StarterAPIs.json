@@ -1,99 +1,98 @@
 {
-	"info": {
-		"_postman_id": "968b3a18-cc72-48a2-9b6b-e8619b4aaca8",
-		"name": "Starter APIs",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-	},
-	"item": [
-		{
-			"name": "Create Author",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"id": "38b1717c-45ae-477f-8dae-8e889ba381d5",
-						"exec": [
-							"pm.test(\"Successful response\", function () {",
-							"    pm.expect(pm.response.text()).to.include(\"success\");",
-							"});",
-							"var json = pm.response.json();",
-							"pm.environment.set(\"id\", json.id);"
-						],
-						"type": "text/javascript"
-					}
-				}
-			],
-			"request": {
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"id\": 0,\n    \"idBook\": 0,\n    \"firstName\": \"{{firstName}}\",\n    \"lastName\": \"{{lastName}}\"\n}",
-					"options": {
-						"raw": {
-							"language": "json"
-						}
-					}
-				},
-				"url": {
-					"raw": "https://fakerestapi.azurewebsites.net/api/v1/Authors",
-					"protocol": "https",
-					"host": [
-						"fakerestapi",
-						"azurewebsites",
-						"net"
-					],
-					"path": [
-						"api",
-						"v1",
-						"Authors"
-					]
-				}
-			},
-			"response": []
-		},
-		{
-			"name": "Get All Authors",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"id": "af3cb111-e3ac-4174-b8ca-7f4127a0285d",
-						"exec": [
-							"pm.test(\"Successful response\", function () {",
-							"    pm.expect(pm.response.text()).to.include(\"success\");",
-							"});",
-							""
-						],
-						"type": "text/javascript"
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "https://fakerestapi.azurewebsites.net/api/v1/Authors",
-					"protocol": "https",
-					"host": [
-						"fakerestapi",
-						"azurewebsites",
-						"net"
-					],
-					"path": [
-						"api",
-						"v1",
-						"Authors"
-					]
-				}
-			},
-			"response": []
-		}
-	],
-	"protocolProfileBehavior": {}
+  "info": {
+    "_postman_id": "968b3a18-cc72-48a2-9b6b-e8619b4aaca8",
+    "name": "Starter APIs",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Create Author",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "id": "38b1717c-45ae-477f-8dae-8e889ba381d5",
+            "exec": [
+              "// Status should be 200 or 201",
+              "pm.test('Status is 200/201', function () {",
+              "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+              "});",
+              "",
+              "// Body should be a JSON object with an id",
+              "pm.test('Body has id', function () {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body).to.be.an('object');",
+              "  pm.expect(body).to.have.property('id');",
+              "  pm.environment.set('id', body.id);",
+              "});"
+            ],
+
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"id\": 0,\n    \"idBook\": 0,\n    \"firstName\": \"{{firstName}}\",\n    \"lastName\": \"{{lastName}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "https://fakerestapi.azurewebsites.net/api/v1/Authors",
+          "protocol": "https",
+          "host": ["fakerestapi", "azurewebsites", "net"],
+          "path": ["api", "v1", "Authors"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get All Authors",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "id": "af3cb111-e3ac-4174-b8ca-7f4127a0285d",
+            "exec": [
+              "// Status should be 200",
+              "pm.test('Status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "",
+              "// Body should be an array",
+              "pm.test('Returns array', function () {",
+              "  const body = pm.response.json();",
+              "  pm.expect(Array.isArray(body)).to.be.true;",
+              "});"
+            ],
+
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://fakerestapi.azurewebsites.net/api/v1/Authors",
+          "protocol": "https",
+          "host": ["fakerestapi", "azurewebsites", "net"],
+          "path": ["api", "v1", "Authors"]
+        }
+      },
+      "response": []
+    }
+  ],
+  "protocolProfileBehavior": {}
 }
