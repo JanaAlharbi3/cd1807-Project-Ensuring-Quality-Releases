@@ -26,21 +26,18 @@ stages:
               set -euxo pipefail
               export DEBIAN_FRONTEND=noninteractive
 
-              # Base tooling (includes zip for packaging)
-              sudo apt-get update
-              sudo apt-get install -y \
+              # Base tooling (zip included)
+               sudo apt-get update
+               sudo apt-get install -y \
                 ca-certificates curl zip unzip \
-                python3 python3-pip python3-venv python3-distutils
+                python3 python3-venv python3-distutils
 
-              # Bootstrap pip on old Python 3.6 if needed
-              if ! python3 -m pip --version >/dev/null 2>&1; then
-                curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
-                sudo -H python3 get-pip.py
-              fi
-              # Keep tools in a range compatible with Py3.6
-              python3 -m pip install --upgrade "pip<22.0" "setuptools<60" wheel
+              # --- Python 3.6: bootstrap pip that still supports 3.6 ---
+              curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
+              sudo -H python3 get-pip.py
+              python3 -m pip install --upgrade "pip<22.0" "setuptools<60" "wheel<0.38"
 
-              # Create venv (fallback to virtualenv if needed)
+              # Create venv (fallback to virtualenv if venv is cranky)
               if ! python3 -m venv .venv >/dev/null 2>&1; then
                 python3 -m pip install "virtualenv==20.24.5"
                 python3 -m virtualenv -p python3 .venv
@@ -48,18 +45,25 @@ stages:
 
               . .venv/bin/activate
               python -V
-              python -m pip --version
+              pip --version
 
-              # Deps + test tools
-              if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+              # Tools that still work on 3.6
               pip install "flake8<6" "pytest<8"
 
-              # Lint EXCLUDING .venv, build and .git; allow 120-char lines
+              # Lint (ignore venv/build/.git); allow 120-char lines
               flake8 . --exclude .venv,build,.git --max-line-length 120
 
-              # Run tests; it's OK if there are none
-              pytest -q || if [ $? -eq 5 ]; then echo "No tests collected"; else exit 1; fi
-            displayName: "Ensure Python + venv + lint & tests"
+              # Tests: treat “no tests collected” (exit 5) as success
+              set +e
+              pytest -q
+              rc=$?
+              set -e
+              if [ "$rc" -eq 5 ]; then
+                echo "Pytest: no tests collected, continuing."
+              elif [ "$rc" -ne 0 ]; then
+                echo "Pytest failed with exit $rc"; exit "$rc"
+              fi
+            displayName: "Ensure Python + venv + lint & tests (py36-safe)"
 
           - bash: |
               set -euxo pipefail
