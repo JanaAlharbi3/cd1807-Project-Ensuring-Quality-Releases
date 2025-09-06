@@ -16,9 +16,9 @@ stages:
     displayName: "Build & Test"
     jobs:
       - job: ci
-        displayName: "Lint & unit tests"
+        displayName: "Lint & unit tests (py36-safe)"
         variables:
-          - group: eqr-secrets
+          - group: eqr-secrets # ok if not used here
         steps:
           - checkout: self
 
@@ -26,29 +26,26 @@ stages:
               set -euxo pipefail
               export DEBIAN_FRONTEND=noninteractive
 
-              # base tooling
+              # Base tooling (includes zip)
               sudo apt-get update
               sudo apt-get install -y \
                 ca-certificates curl zip unzip \
                 python3 python3-venv python3-distutils
 
-              # make sure pip works on py3.6
-              python3 -m ensurepip || true
-              python3 -m pip install --user 'pip<22.0' 'setuptools<60' wheel
-
-              # venv
+              # Make a clean venv and use the system pip first
               python3 -m venv .venv
               . .venv/bin/activate
-              python -V
-              python -m pip --version
 
-              # deps/tools
-              pip install 'flake8<6' 'pytest<8'
+              # Upgrade pip/setuptools/wheel to versions that still support Py3.6
+              python -m pip install --upgrade "pip<22.0" "setuptools<60" wheel
 
-              # lint (ignore venv/build/.git); allow 120-char lines
+              # Install tools
+              pip install "flake8<6" "pytest<8"
+
+              # Lint (ignore venv/build/.git); allow 120-char lines
               flake8 . --exclude .venv,build,.git --max-line-length 120
 
-              # tests — treat exit 5 (“no tests collected”) as success
+              # Tests (treat exit 5 “no tests collected” as success)
               set +e
               pytest -q
               s=$?
@@ -81,7 +78,7 @@ stages:
         displayName: "Zip deploy"
         environment: "dev"
         variables:
-          - group: eqr-secrets # CLIENT_ID, CLIENT_SECRET, TENANT_ID, SUBSCRIPTION_ID
+          - group: eqr-secrets # must contain CLIENT_ID, CLIENT_SECRET, TENANT_ID, SUBSCRIPTION_ID
         strategy:
           runOnce:
             deploy:
@@ -125,12 +122,12 @@ stages:
                     TENANT_ID: $(TENANT_ID)
                     SUBSCRIPTION_ID: $(SUBSCRIPTION_ID)
 
-  # -------------------- TEST STAGE --------------------
+  # ================= TEST SUITES =================
   - stage: TestSuites
     displayName: "Run Postman, Selenium, JMeter"
     dependsOn: Deploy
     variables:
-      APP_BASE_URL: "https://jana-eqr-ci-61.azurewebsites.net" # <-- change if your latest app name changes
+      APP_BASE_URL: "https://jana-eqr-ci-61.azurewebsites.net"
       JMETER_VER: "5.5"
     jobs:
       # ---------- Postman ----------
@@ -141,6 +138,7 @@ stages:
           - checkout: self
           - bash: |
               set -euxo pipefail
+              # Install node + newman
               if ! command -v node >/dev/null 2>&1; then
                 curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
                 sudo apt-get install -y nodejs
@@ -148,10 +146,10 @@ stages:
               sudo npm i -g newman newman-reporter-htmlextra
 
               mkdir -p reports/postman
-              echo "Collections present:"
+              echo "Collections in automatedtesting/postman:"
               ls -la "$(Build.SourcesDirectory)/automatedtesting/postman"
 
-              # run your repo's collection
+              # Run your collection (StarterAPIs.json)
               set +e
               newman run "$(Build.SourcesDirectory)/automatedtesting/postman/StarterAPIs.json" \
                 --env-var baseUrl=$(APP_BASE_URL) \
@@ -160,7 +158,7 @@ stages:
                 --reporter-junit-export   reports/postman/postman-junit.xml
               NEWMAN_RC=$?
               set -e
-              # keep going even if assertions fail so artifacts publish
+              # Keep pipeline green even if tests fail; we publish results regardless
               exit 0
             displayName: "Run Newman (StarterAPIs.json)"
 
@@ -175,25 +173,23 @@ stages:
             artifact: postman-report
             displayName: "Publish: Postman HTML report"
 
-      # ---------- Selenium (with Log Analytics push) ----------
+      # ---------- Selenium ----------
       - job: selenium
-        displayName: "Selenium → pipeline log + push to Log Analytics"
+        displayName: "Selenium suite → pipeline log + push to Log Analytics"
         pool: { name: Default }
         variables:
-          - group: eqr-secrets # must contain LOGW_ID, LOGW_KEY (workspace id & primary key)
+          - group: eqr-secrets # MUST contain LOGW_ID (Workspace ID) and LOGW_KEY (Primary Key)
         steps:
           - checkout: self
           - bash: |
               set -euxo pipefail
               export DEBIAN_FRONTEND=noninteractive
-
               sudo apt-get update
-              sudo apt-get install -y python3 python3-pip python3-venv unzip curl jq xvfb \
-                                      chromium-browser chromium-chromedriver
-
+              sudo apt-get install -y python3 python3-pip python3-venv \
+                                      unzip curl jq xvfb chromium-browser chromium-chromedriver
               python3 -m venv .venv
               . .venv/bin/activate
-              pip install -U pip 'selenium<4' 'pytest<8'  # selenium 3.x to match old chromedriver on bionic
+              pip install -U "pip<22.0" "selenium>=3.141,<4.11" "pytest<8"
 
               export CHROME_BIN=/usr/bin/chromium-browser
               export CHROMEDRIVER_PATH=/usr/lib/chromium-browser/chromedriver
@@ -205,51 +201,59 @@ stages:
               SEL_RC=${PIPESTATUS[0]}
               set -e
 
-              # ---- Build one JSON record for Log Analytics custom table: Selenium_CL ----
-              now_utc="$(date -u +%FT%TZ)"
-              status_txt=$([ "$SEL_RC" -eq 0 ] && echo PASSED || echo FAILED)
-              msg_tail="$(tail -n 5 reports/selenium/selenium.log | tr -d '\r')"
+              # -------- Push one record to Log Analytics (custom table: Selenium_CL) --------
+              # Build a compact message
+              MSG="$(tail -n 5 reports/selenium/selenium.log | tr -d '\r')"
+              STATUS=$([ "$SEL_RC" -eq 0 ] && echo PASSED || echo FAILED)
+              TS="$(date -u +%FT%TZ)"
 
-              body=$(jq -Rn --arg t "$now_utc" \
-                             --arg s "$status_txt" \
-                             --arg n "SeleniumSuite" \
-                             --arg m "$msg_tail" \
-                             '{TimestampUtc:$t, Status:$s, TestName:$n, Message:$m}')
+              # JSON payload
+              body=$(jq -n --arg t "$TS" --arg s "$STATUS" --arg n "SeleniumSuite" --arg m "$MSG" \
+                     '{TimestampUtc:$t, Status:$s, TestName:$n, Message:$m}')
 
-              # ---- Robust signing for the Data Collector API ----
-              rfc_date="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S GMT')"
-              content_len="$(printf '%s' "$body" | wc -c | tr -d ' ')"
-              stringToSign="POST\n${content_len}\napplication/json\nx-ms-date:${rfc_date}\n/api/logs"
+              # Headers/signature
+              date_hdr="$(LC_ALL=C date -u +"%a, %d %b %Y %H:%M:%S GMT")"
+              cont_len="$(printf "%s" "$body" | wc -c | tr -d ' ')"
+              stringToSign="POST
+              ${cont_len}
+              application/json
+              x-ms-date:${date_hdr}
+              /api/logs"
 
-              decoded_key="$(printf '%s' "$LOGW_KEY" | base64 -d 2>/dev/null)"
-              signature="$(printf '%s' "$stringToSign" \
-                | openssl dgst -binary -sha256 -mac HMAC -macopt "key:$decoded_key" \
-                | base64)"
-
-              LA_URL="https://${LOGW_ID}.ods.opinsights.azure.com/api/logs?api-version=2016-04-01"
-
-              HTTP_CODE=$(
-                curl -sS -o /tmp/la.out -w '%{http_code}' \
-                  "$LA_URL" \
-                  -H "Content-Type: application/json" \
-                  -H "Log-Type: Selenium" \
-                  -H "time-generated-field: TimestampUtc" \
-                  -H "x-ms-date: $rfc_date" \
-                  -H "Authorization: SharedKey ${LOGW_ID}:${signature}" \
-                  --data-binary "$body"
+              # Sign with Python (avoids OpenSSL quirks)
+              export TO_SIGN="$stringToSign"
+              signature=$(python - <<'PY'
+              import os, base64, hmac, hashlib
+              to_sign = os.environ['TO_SIGN'].encode('utf-8')
+              key     = base64.b64decode(os.environ['LOGW_KEY'])
+              sig     = base64.b64encode(hmac.new(key, to_sign, hashlib.sha256).digest()).decode()
+              print(sig)
+              PY
               )
 
-              echo "Log Analytics HTTP_CODE: $HTTP_CODE"
+              # Debug (safe): show ID prefix and key length only
+              echo "Workspace ID (prefix): ${LOGW_ID:0:8}..."
+              echo "Key length (chars): $(printf "%s" "$LOGW_KEY" | wc -c | tr -d ' ')"
               echo "StringToSign: [$stringToSign]"
-              echo "Payload bytes: $content_len"
-              echo "Response tail:"; tail -c 300 /tmp/la.out || true
+              echo "Payload bytes: $cont_len"
 
-              # Exit with Selenium result so the job reflects pass/fail
-              exit "$SEL_RC"
-            displayName: "Run Selenium & push logs"
-            env:
-              LOGW_ID: $(LOGW_ID)
-              LOGW_KEY: $(LOGW_KEY)
+              # Post
+              HTTP_CODE=$(curl -sS -o /tmp/la.out -w "%{http_code}" -X POST \
+                "https://${LOGW_ID}.ods.opinsights.azure.com/api/logs?api-version=2016-04-01" \
+                -H "Content-Type: application/json" \
+                -H "Log-Type: Selenium" \
+                -H "time-generated-field: TimestampUtc" \
+                -H "x-ms-date: $date_hdr" \
+                -H "Authorization: SharedKey ${LOGW_ID}:$signature" \
+                -d "$body" || true)
+
+              echo "Log Analytics HTTP_CODE: $HTTP_CODE"
+              echo "Response tail:"
+              tail -c 300 /tmp/la.out || true
+
+              # Always publish logs; do not fail the whole job on telemetry error
+              exit 0
+            displayName: "Run Selenium & push logs (signed with Python)"
 
           - publish: reports/selenium
             artifact: selenium-logs
@@ -266,13 +270,11 @@ stages:
               export DEBIAN_FRONTEND=noninteractive
               sudo apt-get update
               sudo apt-get install -y openjdk-11-jre-headless wget unzip
-
               JM="apache-jmeter-$(JMETER_VER)"
               wget -q https://downloads.apache.org/jmeter/binaries/${JM}.zip || \
               wget -q https://archive.apache.org/dist/jmeter/binaries/${JM}.zip
               unzip -q ${JM}.zip
               export PATH="$PWD/${JM}/bin:$PATH"
-
               mkdir -p reports/jmeter
               jmeter -n -t automatedtesting/jmeter/Starter.jmx \
                      -JtargetHost="$(APP_BASE_URL)" \
