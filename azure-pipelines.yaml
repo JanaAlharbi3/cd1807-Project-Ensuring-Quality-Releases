@@ -35,6 +35,7 @@ stages:
               # --- Python 3.6: bootstrap pip that still supports 3.6 ---
               curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
               sudo -H python3 get-pip.py
+              rm -f get-pip.py 
               python3 -m pip install --upgrade "pip<22.0" "setuptools<60" "wheel<0.38"
 
               # Create venv (fallback to virtualenv if venv is cranky)
