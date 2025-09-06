@@ -1,7 +1,11 @@
+# =======================
+# Azure Pipelines (full)
+# =======================
+
 trigger:
   - main
 
-# Self-hosted agent on your VM
+# self-hosted agent (your VM)
 pool:
   name: Default
 
@@ -16,9 +20,7 @@ stages:
     displayName: "Build & Test"
     jobs:
       - job: ci
-        displayName: "Lint & unit tests"
-        variables:
-          - group: eqr-secrets # must contain CLIENT_ID, CLIENT_SECRET, TENANT_ID, SUBSCRIPTION_ID
+        displayName: "Ensure Python + venv + lint & tests (py36-safe)"
         steps:
           - checkout: self
 
@@ -26,19 +28,23 @@ stages:
               set -euxo pipefail
               export DEBIAN_FRONTEND=noninteractive
 
-              # Base tooling (zip included)
-               sudo apt-get update
-               sudo apt-get install -y \
+              # Base tooling (Ubuntu 18.04 has Python 3.6)
+              sudo apt-get update
+              sudo apt-get install -y \
                 ca-certificates curl zip unzip \
                 python3 python3-venv python3-distutils
 
-              # --- Python 3.6: bootstrap pip that still supports 3.6 ---
-              curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
-              sudo -H python3 get-pip.py
-              rm -f get-pip.py 
-              python3 -m pip install --upgrade "pip<22.0" "setuptools<60" "wheel<0.38"
+              # Make sure pip exists for Python 3.6
+              if ! python3 -m pip --version >/dev/null 2>&1; then
+                curl -sS https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py
+                sudo -H python3 get-pip.py
+                rm -f get-pip.py     # don't let flake8 lint this file
+              fi
 
-              # Create venv (fallback to virtualenv if venv is cranky)
+              # Older Python needs older pip/setuptools
+              python3 -m pip install --upgrade "pip<22.0" "setuptools<60" wheel
+
+              # Create venv (fallback to virtualenv if needed)
               if ! python3 -m venv .venv >/dev/null 2>&1; then
                 python3 -m pip install "virtualenv==20.24.5"
                 python3 -m virtualenv -p python3 .venv
@@ -46,15 +52,13 @@ stages:
 
               . .venv/bin/activate
               python -V
-              pip --version
+              python -m pip --version
 
-              # Tools that still work on 3.6
+              # Lint & unit tests
               pip install "flake8<6" "pytest<8"
-
-              # Lint (ignore venv/build/.git); allow 120-char lines
               flake8 . --exclude .venv,build,.git --max-line-length 120
 
-              # Tests: treat “no tests collected” (exit 5) as success
+              # Treat “no tests collected” as success
               set +e
               pytest -q
               rc=$?
@@ -78,7 +82,7 @@ stages:
             artifact: appzip
             displayName: "Publish artifact"
 
-  # ================= CD =================
+  # ================ CD ================
   - stage: Deploy
     displayName: "Deploy to App Service"
     dependsOn: BuildAndTest
@@ -86,6 +90,8 @@ stages:
       - deployment: deploy
         displayName: "Zip deploy"
         environment: "dev"
+        variables:
+          - group: eqr-secrets # must contain: CLIENT_ID, CLIENT_SECRET, TENANT_ID, SUBSCRIPTION_ID
         strategy:
           runOnce:
             deploy:
@@ -96,23 +102,21 @@ stages:
                 - bash: |
                     set -euxo pipefail
 
-                    # Azure CLI (install if missing)
+                    # Install Azure CLI if missing
                     if ! command -v az >/dev/null 2>&1; then
                       curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
                     fi
 
-                    # --- LOGIN WITH SERVICE PRINCIPAL ---
+                    # Login + subscription
                     az login --service-principal \
                       -u "$CLIENT_ID" -p "$CLIENT_SECRET" --tenant "$TENANT_ID" >/dev/null
-
                     az account set --subscription "$SUBSCRIPTION_ID"
 
-                    # Find the newest webapp in the RG that matches the prefix
+                    # Find latest webapp with the prefix
                     APP_NAME="$(az webapp list -g "$(RESOURCE_GROUP)" \
                       --query "reverse(sort_by([?starts_with(name, '$(APP_NAME_PREFIX)')], &name))[:1].name" -o tsv)"
-
                     if [ -z "$APP_NAME" ]; then
-                      echo "No webapp matching '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'." >&2
+                      echo "No webapp found matching prefix '$(APP_NAME_PREFIX)' in RG '$(RESOURCE_GROUP)'." >&2
                       exit 1
                     fi
                     echo "Deploying to: ${APP_NAME}"
@@ -123,10 +127,145 @@ stages:
 
                     HOST="$(az webapp show -g "$(RESOURCE_GROUP)" -n "${APP_NAME}" --query "defaultHostName" -o tsv)"
                     echo "Smoke check https://${HOST}/"
-                    curl -I --max-time 20 "https://${HOST}/" || true
+                    curl -sS --head --max-time 20 "https://${HOST}/" || true
+
+                    # Expose URL for later stages (works within this pipeline run)
+                    echo "##vso[task.setvariable variable=APP_URL]https://${HOST}"
                   displayName: "Login + Deploy (zip) + smoke check"
                   env:
                     CLIENT_ID: $(CLIENT_ID)
                     CLIENT_SECRET: $(CLIENT_SECRET)
                     TENANT_ID: $(TENANT_ID)
                     SUBSCRIPTION_ID: $(SUBSCRIPTION_ID)
+
+  # ---------- TEST STAGE ----------
+  - stage: TestSuites
+    displayName: "Run Postman, Selenium, JMeter"
+    dependsOn: Deploy
+    variables:
+      # Use the value set in Deploy step; fallback to a known URL if needed
+      APP_BASE_URL: $[ variables.APP_URL ]
+      JMETER_VER: "5.5"
+    jobs:
+      # --- Postman ---
+      - job: postman
+        displayName: "Postman → HTML + JUnit"
+        steps:
+          - checkout: self
+          - bash: |
+              set -euxo pipefail
+              if ! command -v node >/dev/null 2>&1; then
+                curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+                sudo apt-get install -y nodejs
+              fi
+              sudo npm i -g newman newman-reporter-htmlextra
+
+              mkdir -p reports/postman
+              echo "Collections under automatedtesting/postman:"
+              ls -la "$(Build.SourcesDirectory)/automatedtesting/postman"
+
+              # Run the provided Starter collection; pass baseUrl
+              newman run "$(Build.SourcesDirectory)/automatedtesting/postman/StarterAPIs.json" \
+                --env-var baseUrl=$(APP_BASE_URL) \
+                -r cli,htmlextra,junit \
+                --reporter-htmlextra-export reports/postman/postman-report.html \
+                --reporter-junit-export   reports/postman/postman-junit.xml || true
+            displayName: "Run Newman (StarterAPIs.json)"
+
+          - task: PublishTestResults@2
+            displayName: "Publish Postman JUnit"
+            inputs:
+              testResultsFormat: "JUnit"
+              testResultsFiles: "reports/postman/postman-junit.xml"
+              failTaskOnFailedTests: false
+
+          - publish: reports/postman
+            artifact: postman-report
+            displayName: "Publish: Postman HTML report"
+
+      # --- Selenium ---
+      - job: selenium
+        displayName: "Selenium suite → pipeline log + push to Log Analytics"
+        variables:
+          - group: eqr-secrets # must also contain: LOGW_ID, LOGW_KEY
+        steps:
+          - checkout: self
+          - bash: |
+              set -euxo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              sudo apt-get update
+              sudo apt-get install -y python3 python3-venv python3-pip \
+                                      unzip curl jq xvfb chromium-browser chromium-chromedriver
+
+              python3 -m venv .venv
+              . .venv/bin/activate
+              pip install -U pip selenium pytest
+
+              export CHROME_BIN=/usr/bin/chromium-browser
+              export CHROMEDRIVER_PATH=/usr/lib/chromium-browser/chromedriver
+              export BASE_URL="$(APP_BASE_URL)"
+
+              mkdir -p reports/selenium
+
+              set +e
+              xvfb-run -a python automatedtesting/selenium/login.py | tee reports/selenium/selenium.log
+              SEL_RC=${PIPESTATUS[0]}
+              set -e
+
+              # Push one record to Log Analytics (custom table: Selenium_CL)
+              body=$(jq -Rn --arg t "$(date -u +%FT%TZ)" \
+                             --arg s "$([ "$SEL_RC" -eq 0 ] && echo PASSED || echo FAILED)" \
+                             --arg n "SeleniumSuite" \
+                             --arg m "$(tail -n 5 reports/selenium/selenium.log | tr -d '\r')" \
+                     '{TimestampUtc:$t, Status:$s, TestName:$n, Message:$m}')
+              date_hdr="$(LC_ALL=C date -u +"%a, %d %b %Y %H:%M:%S GMT")"
+              cont_len="$(printf "%s" "$body" | wc -c)"
+              stringToSign="POST\n$cont_len\napplication/json\nx-ms-date:$date_hdr\n/api/logs"
+              signature=$(printf '%s' "$stringToSign" \
+                | openssl dgst -sha256 -hmac "$(printf '%s' "$LOGW_KEY" | base64 -d)" -binary \
+                | base64)
+
+              curl -sS -X POST "https://${LOGW_ID}.ods.opinsights.azure.com/api/logs?api-version=2016-04-01" \
+                -H "Content-Type: application/json" \
+                -H "Log-Type: Selenium" \
+                -H "x-ms-date: $date_hdr" \
+                -H "Authorization: SharedKey ${LOGW_ID}:$signature" \
+                -d "$body" || true
+
+              exit "$SEL_RC"
+            displayName: "Run Selenium & push logs"
+            env:
+              LOGW_ID: $(LOGW_ID)
+              LOGW_KEY: $(LOGW_KEY)
+
+          - publish: reports/selenium
+            artifact: selenium-logs
+            displayName: "Publish: Selenium logs"
+
+      # --- JMeter ---
+      - job: jmeter
+        displayName: "JMeter → .jtl + HTML report"
+        steps:
+          - checkout: self
+          - bash: |
+              set -euxo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              sudo apt-get update
+              sudo apt-get install -y openjdk-11-jre-headless wget unzip
+
+              JM="apache-jmeter-$(JMETER_VER)"
+              wget -q https://downloads.apache.org/jmeter/binaries/${JM}.zip || \
+              wget -q https://archive.apache.org/dist/jmeter/binaries/${JM}.zip
+              unzip -q ${JM}.zip
+              export PATH="$PWD/${JM}/bin:$PATH"
+
+              mkdir -p reports/jmeter
+              jmeter -n -t automatedtesting/jmeter/Starter.jmx \
+                     -JtargetHost="$(APP_BASE_URL)" \
+                     -l reports/jmeter/results.jtl \
+                     -e -o reports/jmeter/html
+            displayName: "Run JMeter headless"
+
+          - publish: reports/jmeter
+            artifact: jmeter-report
+            displayName: "Publish: JMeter HTML report"
